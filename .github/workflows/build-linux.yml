@@ -1,0 +1,97 @@
+name: Oboro Linux build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'oboro-linux-v*'
+
+permissions:
+  contents: write
+
+env:
+  DIST: Oboro-LLVM21-NDK-r30-Linux-x64
+  CLANG_VER: 21
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake clang lld
+
+      - name: Configure CMake
+        run: |
+          cmake -S llvm -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DLLVM_ENABLE_PROJECTS="clang;lld" \
+                -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM" \
+                -DLLVM_INCLUDE_TESTS=OFF \
+                -DLLVM_INCLUDE_EXAMPLES=OFF \
+                -DLLVM_INCLUDE_BENCHMARKS=OFF \
+                -DCMAKE_C_COMPILER=clang \
+                -DCMAKE_CXX_COMPILER=clang++ \
+                -DLLVM_USE_LINKER=lld \
+                -DLLVM_PARALLEL_LINK_JOBS=1
+
+      - name: Build
+        run: |
+          ninja -C build clang lld llvm-ar llvm-strip llvm-nm llvm-objdump \
+                         llvm-readelf llvm-objcopy llvm-ranlib
+
+
+      - name: Package
+        run: |
+          set -eu
+          mkdir -p "$DIST/bin" "$DIST/lib/clang/$CLANG_VER/include"
+          for t in clang clang++ clang-cpp lld ld.lld llvm-ar llvm-strip llvm-nm \
+                   llvm-objdump llvm-readelf llvm-objcopy llvm-ranlib; do
+            if [ -e "build/bin/$t" ]; then
+              cp -a "build/bin/$t" "$DIST/bin/"
+            else
+              echo "missing build/bin/$t"
+            fi
+          done
+          cp -a "build/lib/clang/$CLANG_VER/include/." "$DIST/lib/clang/$CLANG_VER/include/"
+          tar -czf "$DIST.tar.gz" "$DIST"
+          ls -lh "$DIST.tar.gz"
+
+
+      - name: Smoke test
+        run: |
+          set -eu
+          export PATH="$PWD/$DIST/bin:$PATH"
+          printf '#include <stdint.h>\n#include <stdio.h>\nint main(void){printf("%%d\\n",(int)sizeof(uint64_t));return 0;}\n' > smoke.c
+          "$DIST/bin/clang" -O2 -mllvm -irobf-merge smoke.c -o smoke
+          ./smoke
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DIST }}
+          path: ${{ env.DIST }}.tar.gz
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DIST }}.tar.gz
+          name: Oboro LLVM21 / NDK r30 — Linux x64
+          body: |
+            Linux build
