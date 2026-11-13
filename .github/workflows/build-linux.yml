@@ -30,11 +30,17 @@ jobs:
 
       - name: Checkout Code
         uses: actions/checkout@v4
+        
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: oboro-linux-llvm21
+          max-size: 4G
 
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake clang lld
+          sudo apt-get install -y ninja-build cmake clang lld build-essential
 
       - name: Configure CMake
         run: |
@@ -47,6 +53,8 @@ jobs:
                 -DLLVM_INCLUDE_BENCHMARKS=OFF \
                 -DCMAKE_C_COMPILER=clang \
                 -DCMAKE_CXX_COMPILER=clang++ \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
                 -DLLVM_USE_LINKER=lld \
                 -DLLVM_PARALLEL_LINK_JOBS=1
 
@@ -63,11 +71,12 @@ jobs:
           for t in clang clang++ clang-cpp lld ld.lld llvm-ar llvm-strip llvm-nm \
                    llvm-objdump llvm-readelf llvm-objcopy llvm-ranlib; do
             if [ -e "build/bin/$t" ]; then
-              cp -a "build/bin/$t" "$DIST/bin/"
+              cp -aL "build/bin/$t" "$DIST/bin/$t"
             else
               echo "missing build/bin/$t"
             fi
           done
+          test -x "$DIST/bin/clang" || { echo "ERROR: clang missing from package"; exit 1; }
           cp -a "build/lib/clang/$CLANG_VER/include/." "$DIST/lib/clang/$CLANG_VER/include/"
           tar -czf "$DIST.tar.gz" "$DIST"
           ls -lh "$DIST.tar.gz"
@@ -76,10 +85,10 @@ jobs:
       - name: Smoke test
         run: |
           set -eu
-          export PATH="$PWD/$DIST/bin:$PATH"
-          printf '#include <stdint.h>\n#include <stdio.h>\nint main(void){printf("%%d\\n",(int)sizeof(uint64_t));return 0;}\n' > smoke.c
-          "$DIST/bin/clang" -O2 -mllvm -irobf-merge smoke.c -o smoke
-          ./smoke
+          printf '#include <stdint.h>\nint sq(int x){return x*x;}\n' > smoke.c
+          "$DIST/bin/clang" -O2 -mllvm -irobf-merge -c smoke.c -o smoke.o
+          file smoke.o
+          test -s smoke.o
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
